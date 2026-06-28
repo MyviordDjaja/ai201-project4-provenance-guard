@@ -1,9 +1,9 @@
 """Provenance Guard - Flask API.
 
-Milestone 3 scope: POST /submit runs Signal 1 (Groq LLM), writes a structured
-audit entry, and returns content_id + attribution + a PLACEHOLDER confidence and
-label. The real combined confidence score arrives in M4 and the real label
-variants in M5; the placeholders are marked as such so they are obvious.
+Milestone 4 scope: POST /submit runs both detection signals (Groq LLM +
+stylometry), combines them with the asymmetric confidence scorer, and returns
+content_id + verdict + a real confidence score. The transparency label is still
+a PLACEHOLDER until M5, where it maps the verdict to reader-facing text.
 """
 
 import uuid
@@ -13,23 +13,10 @@ from flask import Flask, jsonify, request
 import audit
 import config
 import detection
+import scoring
 
 app = Flask(__name__)
 audit.init_db()
-
-
-def _provisional_attribution(p_ai):
-    """M3 placeholder verdict from the single LLM signal.
-
-    Replaced in M4 by the two-signal asymmetric scorer in scoring.py. Kept here
-    only so /submit returns a meaningful attribution before the second signal
-    exists.
-    """
-    if p_ai >= config.AI_THRESHOLD:
-        return "likely_ai"
-    if p_ai <= config.HUMAN_THRESHOLD:
-        return "likely_human"
-    return "uncertain"
 
 
 @app.route("/health", methods=["GET"])
@@ -52,44 +39,54 @@ def submit():
 
     content_id = uuid.uuid4().hex
 
-    # --- Signal 1: LLM ---
+    # --- detection pipeline: two independent signals ---
     try:
         llm = detection.llm_signal(text)
     except Exception as exc:  # surface upstream/Groq failures cleanly
         return jsonify({"error": f"Detection failed: {exc}"}), 502
+    style = detection.stylometry_signal(text)
 
-    attribution = _provisional_attribution(llm["p_ai"])
+    # --- combine into the calibrated confidence score ---
+    result = scoring.score(llm["p_ai"], style["p_ai"], low_evidence=low_evidence)
 
-    # --- placeholders (real versions land in M4 confidence scoring / M5 labels) ---
-    confidence = None  # placeholder until M4
+    # --- transparency label is still a placeholder until M5 ---
     label = {
         "variant": "placeholder",
-        "title": "Analysis in progress",
-        "body": "Confidence scoring and the transparency label are added in later milestones.",
+        "title": "Analysis complete",
+        "body": "The reader-facing transparency label text is added in Milestone 5.",
     }
 
-    # --- audit log ---
+    # --- audit log (now records both signal scores + the combined result) ---
     audit.log_event(
         event_type="decision",
         content_id=content_id,
         creator_id=creator_id,
-        attribution=attribution,
-        p_ai=llm["p_ai"],          # provisional: single-signal until M4
-        confidence=confidence,
+        attribution=result["verdict"],
+        p_ai=result["p_ai"],
+        confidence=result["confidence"],
         llm_score=llm["p_ai"],
-        stylometry_score=None,     # Signal 2 added in M4
+        stylometry_score=style["p_ai"],
         status="classified",
         label_variant=label["variant"],
-        detail={"text_excerpt": text[:280], "low_evidence": low_evidence, "llm_rationale": llm["rationale"]},
+        detail={
+            "text_excerpt": text[:280],
+            "low_evidence": low_evidence,
+            "llm_rationale": llm["rationale"],
+            "stylometry_features": style["features"],
+            "signal_spread": result["signal_spread"],
+            "blend": result["blend"],
+        },
     )
 
     return jsonify({
         "content_id": content_id,
         "creator_id": creator_id,
-        "attribution": attribution,
-        "confidence": confidence,           # placeholder (M4)
+        "verdict": result["verdict"],
+        "p_ai": result["p_ai"],
+        "confidence": result["confidence"],
         "signals": {
             "llm": {"p_ai": llm["p_ai"], "rationale": llm["rationale"]},
+            "stylometry": {"p_ai": style["p_ai"], "features": style["features"]},
         },
         "label": label,                     # placeholder (M5)
         "status": "classified",

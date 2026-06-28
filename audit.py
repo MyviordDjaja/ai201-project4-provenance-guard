@@ -97,6 +97,17 @@ def log_event(
     }
 
 
+def update_status(content_id, status):
+    """Set the status on every decision row for a content_id (used when an appeal
+    flips the content to 'under_review'). Returns the number of rows updated."""
+    with _connect() as conn:
+        cursor = conn.execute(
+            "UPDATE events SET status = ? WHERE content_id = ? AND event_type = 'decision'",
+            (status, content_id),
+        )
+        return cursor.rowcount
+
+
 def _row_to_dict(row):
     entry = dict(row)
     if entry.get("detail"):

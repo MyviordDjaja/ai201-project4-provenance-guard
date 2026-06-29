@@ -158,4 +158,6 @@ def log():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    # use_reloader=False keeps a single process (the reloader otherwise spawns a
+    # parent + child); debug stays on for readable error pages during development.
+    app.run(host="127.0.0.1", port=5000, debug=True, use_reloader=False)
